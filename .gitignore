@@ -3,3 +3,9 @@
 ################################################################################
 
 /.vs/CollatzProblem
+/CollatzProblem/.vscode
+/CollatzProblem/bin
+/CollatzProblem/obj
+/CollatzProblem/Properties/PublishProfiles
+/CollatzProblem/Program.exe
+/CollatzProblem/CollatzProblem.csproj.user

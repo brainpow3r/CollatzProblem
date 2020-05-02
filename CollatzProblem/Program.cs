@@ -8,13 +8,12 @@ namespace CollatzProblem
     public class Program
     {
         static int numberOfThreads = 1;
-        static long itemCount = 1000;
-        static SafeNumberArray numbers;
-
+        static long itemCount = 50000;
+        
         static void Main(string[] args)
         {
             long baseTime = 0;
-            numbers = new SafeNumberArray(itemCount) { NextFreeIndex = 0 };
+            SafeNumberArray numbers = new SafeNumberArray(itemCount) { NextFreeIndex = 0 };
 
             if (args.Length == 0)
                 Console.WriteLine("Number of threads to use was not supplied. 1 Thread will be used");
@@ -29,24 +28,23 @@ namespace CollatzProblem
             Console.WriteLine("[NumberOfThreads] [Workload] [TimeS] [Speedup]");
             for (numberOfThreads = 1; numberOfThreads <= 32; numberOfThreads *= 2)
             {
-                long dtime = MakePerformanceTest();
+                long dtime = MakePerformanceTest(numbers);
                 baseTime = (numberOfThreads == 1) ? dtime : baseTime;
                 decimal speedup = (decimal)baseTime / (decimal)dtime;
                 ReloadData(ref numbers);
                 Console.WriteLine("{0} {1} {2} {3}", numberOfThreads, itemCount, dtime, speedup);
             }
-            Console.ReadKey();
         }
 
-        public static long MakePerformanceTest()
+        public static long MakePerformanceTest(SafeNumberArray numbers)
         {
             Thread[] workers = new Thread[numberOfThreads];
             Stopwatch t = new Stopwatch();
-
+            t.Reset();
             t.Start();
             for (int i = 0; i < numberOfThreads; i++)
             {
-                workers[i] = new Thread(Collatz);
+                workers[i] = new Thread(() => Collatz(ref numbers));
                 workers[i].Start();
             }
 
@@ -58,11 +56,12 @@ namespace CollatzProblem
             return t.ElapsedMilliseconds;
         }
 
-        public static void Collatz()
+        public static void Collatz(ref SafeNumberArray numbers)
         {
             while(true)
             {
                 SafeNumber freeNumber = numbers.GetNextFree();
+                
                 if (freeNumber == null)
                     break;
 
@@ -104,16 +103,23 @@ namespace CollatzProblem
     {
         public SafeNumberArray(long count) => Numbers = new SafeNumber[count];
         private object _lock = new object();
+        private object _indexLock = new object();
         private long _nextIndex { get; set; } = 0;
         public SafeNumber[] Numbers { get; set; }
         public long NextFreeIndex {
             get
             {
                 Monitor.Enter(_lock);
-                long returnIndex = _nextIndex;
-                _nextIndex = GetNextFreeNumberIndex();
-                Monitor.Exit(_lock);
-                return returnIndex;
+                try
+                {
+                    long returnIndex = _nextIndex;
+                    _nextIndex = GetNextFreeNumberIndex();
+                    return returnIndex;
+                } 
+                finally
+                {
+                    Monitor.Exit(_lock);
+                }
             }
             set
             {
@@ -123,14 +129,35 @@ namespace CollatzProblem
 
         public SafeNumber GetNextFree()
         {
-            if (_nextIndex >= 0 && _nextIndex < Numbers.Length-1)
+            if (_nextIndex >= 0 && _nextIndex <= Numbers.Length-1)
             {
-                Monitor.Enter(_lock);
-                SafeNumber number = Numbers[NextFreeIndex];
-                number.Taken = true;
-                Numbers[number.Index].Taken = true;
-                Monitor.Exit(_lock);
-                return number;
+                bool lockTaken = false;
+                TimeSpan ts = TimeSpan.FromMilliseconds(-1);
+
+                try
+                {
+                    Monitor.TryEnter(_lock, ts, ref lockTaken);
+
+                    if (lockTaken)
+                    {
+                        SafeNumber number = Numbers[NextFreeIndex];
+                        if (number.Index == Numbers.Length - 1 && number.Taken)
+                            return null;
+                        else
+                        {
+                            number.Taken = true;
+                            Numbers[number.Index].Taken = true;
+                            return number;
+                        }
+                    }
+
+                    return null;
+                }
+                finally
+                {
+                    if (lockTaken)
+                        Monitor.Exit(_lock);
+                }
             }
             else
                 return null;
@@ -138,11 +165,28 @@ namespace CollatzProblem
 
         private long GetNextFreeNumberIndex()
         {
-            Monitor.Enter(_lock);
-            while (++_nextIndex <= (Numbers.Length - 1) && !Numbers[_nextIndex].Taken) { }
+            bool lockTaken = false;
+            TimeSpan ts = TimeSpan.FromMilliseconds(-1);
+            try
+            {
+                Monitor.TryEnter(_indexLock, ts, ref lockTaken);
+                if (lockTaken)
+                    while (true) 
+                    {
+                        if (_nextIndex < (Numbers.Length - 1) && Numbers[_nextIndex].Taken)
+                            ++_nextIndex;
+                        else
+                            break;
+                    }
+                return _nextIndex;
+            }
+            finally
+            {
+                if (lockTaken)
+                    Monitor.Exit(_indexLock);
 
-            Monitor.Exit(_lock);
-            return _nextIndex;
+            }
+            
         }
     }
 

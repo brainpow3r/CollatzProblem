@@ -7,195 +7,104 @@ namespace CollatzProblem
 {
     public class Program
     {
-        static int numberOfThreads = 1;
-        static long itemCount = 50000;
-        
         static void Main(string[] args)
         {
             long baseTime = 0;
-            SafeNumberArray numbers = new SafeNumberArray(itemCount) { NextFreeIndex = 0 };
+            int threadsToUse = 16;
+            long itemCount = 1000000;
 
             if (args.Length == 0)
                 Console.WriteLine("Number of threads to use was not supplied. 1 Thread will be used");
             else
             {
-                numberOfThreads = int.Parse(args[0]);
+                threadsToUse = int.Parse(args[0]);
                 itemCount = long.Parse(args[1]);
             }
 
+            long[] numbers = new long[itemCount];
+            // Initialize array with random nubers ranging from 0 to MaxInt
             InitData(ref numbers);
 
-            Console.WriteLine("[NumberOfThreads] [Workload] [TimeS] [Speedup]");
-            for (numberOfThreads = 1; numberOfThreads <= 32; numberOfThreads *= 2)
+            Console.WriteLine("[MaxIteration] [NumberOfThreads] [Workload] [TimeMs] [Speedup]");
+            int[] t = new int[] { 1, 2, 4, 8, 12 };
+            for (int i = 0; i < 5; i++)
             {
-                long dtime = MakePerformanceTest(numbers);
-                baseTime = (numberOfThreads == 1) ? dtime : baseTime;
+                long dtime = MakePerformanceTest(numbers, t[i]);
+                // Performance test with 1 thread will be our base measurement
+                baseTime = (t[i] == 1) ? dtime : baseTime;
                 decimal speedup = (decimal)baseTime / (decimal)dtime;
-                ReloadData(ref numbers);
-                Console.WriteLine("{0} {1} {2} {3}", numberOfThreads, itemCount, dtime, speedup);
+                Console.WriteLine("{0} {1} {2} {3}", t[i], itemCount, dtime, speedup);
             }
         }
 
-        public static long MakePerformanceTest(SafeNumberArray numbers)
+        public static long MakePerformanceTest(long[] numbers, int threadCount)
         {
-            Thread[] workers = new Thread[numberOfThreads];
+            Thread[] workers = new Thread[threadCount];
             Stopwatch t = new Stopwatch();
+            int elementsForThread = numbers.Length / threadCount;
             t.Reset();
             t.Start();
-            for (int i = 0; i < numberOfThreads; i++)
+
+            long maxSteps = 0;
+            object _lock = new object();
+            for (int i = 0; i < threadCount; i++)
             {
-                workers[i] = new Thread(() => Collatz(ref numbers));
+                int rangeStart = i * elementsForThread;
+                int rangeEnd = rangeStart + elementsForThread;
+                workers[i] = new Thread(() => {
+                    long maxRangeIteration = Collatz(numbers, rangeStart, rangeEnd);
+                    Monitor.Enter(_lock);
+                        maxSteps = (maxSteps <= maxRangeIteration) ? maxRangeIteration : maxSteps;
+                    Monitor.Exit(_lock);
+                    });
+
                 workers[i].Start();
             }
 
-            for (int i = 0; i < numberOfThreads; i++)
+            for (int i = 0; i < threadCount; i++)
             {
                 workers[i].Join();
             }
+            Console.Write($"{maxSteps} ");
+
             t.Stop();
             return t.ElapsedMilliseconds;
         }
 
-        public static void Collatz(ref SafeNumberArray numbers)
+        public static long Collatz(long[] numbers, int rangeStart, int rangeEnd)
         {
-            while(true)
-            {
-                SafeNumber freeNumber = numbers.GetNextFree();
-                
-                if (freeNumber == null)
-                    break;
+            long maxSteps = 0;
+            for (int j = rangeStart; j < rangeEnd; j++)
+            { 
+                long collatzSteps = 0;
+                long currentNumber = numbers[j];
 
-                long number = freeNumber.Number;
-                while (number != 1)
+                if (currentNumber == 0)
+                    continue;
+
+                while (currentNumber != 1)
                 {
-                    if (number % 2 != 0)
+                    if (currentNumber % 2 != 0)
                     {
-                        number = 3 * number + 1;
+                        currentNumber = 3 * currentNumber + 1;
                     } else
                     {
-                        number = number / 2;
+                        currentNumber = currentNumber / 2;
                     }
-
+                    collatzSteps++;
                 }
+                maxSteps = (collatzSteps >= maxSteps) ? collatzSteps : maxSteps;
             }
-            
-
+            return maxSteps;
         }
 
-        public static void InitData(ref SafeNumberArray numbers)
+        public static void InitData(ref long[] numbers)
         {
             Random r = new Random(int.MaxValue);
-            for (int i = 0; i < itemCount; i++)
-                numbers.Numbers[i] = new SafeNumber() { Index = i, Number = r.Next(), Taken = false };
+            for (int i = 0; i < numbers.Length; i++)
+                numbers[i] = r.Next();
 
-        }
-
-        public static void ReloadData(ref SafeNumberArray numbers)
-        {
-            for (int i = 0; i < itemCount; i++)
-                numbers.Numbers[i].Taken = false;
-
-            numbers.NextFreeIndex = 0;
         }
     }
-
-    public class SafeNumberArray
-    {
-        public SafeNumberArray(long count) => Numbers = new SafeNumber[count];
-        private object _lock = new object();
-        private object _indexLock = new object();
-        private long _nextIndex { get; set; } = 0;
-        public SafeNumber[] Numbers { get; set; }
-        public long NextFreeIndex {
-            get
-            {
-                Monitor.Enter(_lock);
-                try
-                {
-                    long returnIndex = _nextIndex;
-                    _nextIndex = GetNextFreeNumberIndex();
-                    return returnIndex;
-                } 
-                finally
-                {
-                    Monitor.Exit(_lock);
-                }
-            }
-            set
-            {
-                this._nextIndex = value;
-            }
-        }
-
-        public SafeNumber GetNextFree()
-        {
-            if (_nextIndex >= 0 && _nextIndex <= Numbers.Length-1)
-            {
-                bool lockTaken = false;
-                TimeSpan ts = TimeSpan.FromMilliseconds(-1);
-
-                try
-                {
-                    Monitor.TryEnter(_lock, ts, ref lockTaken);
-
-                    if (lockTaken)
-                    {
-                        SafeNumber number = Numbers[NextFreeIndex];
-                        if (number.Index == Numbers.Length - 1 && number.Taken)
-                            return null;
-                        else
-                        {
-                            number.Taken = true;
-                            Numbers[number.Index].Taken = true;
-                            return number;
-                        }
-                    }
-
-                    return null;
-                }
-                finally
-                {
-                    if (lockTaken)
-                        Monitor.Exit(_lock);
-                }
-            }
-            else
-                return null;
-        }
-
-        private long GetNextFreeNumberIndex()
-        {
-            bool lockTaken = false;
-            TimeSpan ts = TimeSpan.FromMilliseconds(-1);
-            try
-            {
-                Monitor.TryEnter(_indexLock, ts, ref lockTaken);
-                if (lockTaken)
-                    while (true) 
-                    {
-                        if (_nextIndex < (Numbers.Length - 1) && Numbers[_nextIndex].Taken)
-                            ++_nextIndex;
-                        else
-                            break;
-                    }
-                return _nextIndex;
-            }
-            finally
-            {
-                if (lockTaken)
-                    Monitor.Exit(_indexLock);
-
-            }
-            
-        }
-    }
-
-    public class SafeNumber
-    {
-        public long Index { get; set; }
-        public long Number { get; set; }
-        public bool Taken { get; set; }
-    }
-
 
 }
